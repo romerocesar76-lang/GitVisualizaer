@@ -349,17 +349,6 @@ function branchColor(name) {
 function shortHash(h) { return h.slice(0,7); }
 function makeHash() { return Math.random().toString(16).slice(2,10); }
 
-function getCurrentBranchLabel() {
-  if (!state.initialized) return 'sin init';
-  return state.currentBranch || 'detached';
-}
-
-function getCommitBranchForHEAD() {
-  if (state.currentBranch) return state.currentBranch;
-  const headCommit = state.commits.find(c => c.id === state.HEAD);
-  return headCommit ? headCommit.branch : 'detached';
-}
-
 // ─── Canvas setup ────────────────────────────────────────────────────────────
 const canvas = document.getElementById('gitCanvas');
 const ctx = canvas.getContext('2d');
@@ -653,25 +642,22 @@ function cmdCommit(args) {
   if (mIdx !== -1) {
     msg = args.slice(mIdx + 1).join(' ').replace(/^["']|["']$/g, '');
   }
-  const branchName = getCommitBranchForHEAD();
-  _addCommit(msg, branchName);
-  log('success', `[${state.currentBranch || 'detached'} ${shortHash(state.HEAD)}] ${msg}`);
+  _addCommit(msg);
+  log('success', `[${state.currentBranch} ${shortHash(state.HEAD)}] ${msg}`);
 }
 
-function _addCommit(msg, branch) {
+function _addCommit(msg) {
   const id = makeHash();
   const commit = {
     id,
     message: msg,
-    branch,
+    branch: state.currentBranch,
     parents: state.HEAD ? [state.HEAD] : [],
     x: 0, y: 0,
   };
   state.commits.push(commit);
   state.HEAD = id;
-  if (state.currentBranch) {
-    state.branches[state.currentBranch] = id;
-  }
+  state.branches[state.currentBranch] = id;
   return commit;
 }
 
@@ -687,13 +673,13 @@ function cmdBranch(args) {
     const target = args[1];
     if (!target) { log('error', 'Especifica el nombre de la rama a eliminar.'); return; }
     if (target === state.currentBranch) { log('error', 'No puedes eliminar la rama actual.'); return; }
-    if (!(target in state.branches)) { log('error', `Rama "${target}" no encontrada.`); return; }
+    if (!state.branches[target]) { log('error', `Rama "${target}" no encontrada.`); return; }
     delete state.branches[target];
     delete state.branchColors[target];
     log('success', `Rama "${target}" eliminada.`);
     return;
   }
-  if (name in state.branches) { log('error', `La rama "${name}" ya existe.`); return; }
+  if (state.branches[name] !== undefined) { log('error', `La rama "${name}" ya existe.`); return; }
   state.branches[name] = state.HEAD;
   branchColor(name);
   log('success', `Rama "${name}" creada en ${shortHash(state.HEAD || '0000000')}`);
@@ -703,15 +689,15 @@ function cmdCheckout(args) {
   if (!state.initialized) { log('error', 'No hay repositorio.'); return; }
   const target = args[0];
   if (!target) { log('error', 'Especifica una rama o hash.'); return; }
-  if (target in state.branches) {
+  if (state.branches[target] !== undefined) {
     state.currentBranch = target;
-    state.HEAD = state.branches[target];
+    if (state.branches[target]) state.HEAD = state.branches[target];
     log('success', `Cambiado a rama "${target}"`);
   } else {
     const c = state.commits.find(x => x.id.startsWith(target));
     if (c) {
       state.HEAD = c.id;
-      state.currentBranch = null;
+      state.currentBranch = c.branch;
       log('info', `HEAD en commit ${shortHash(c.id)} (detached)`);
     } else {
       log('error', `Rama o commit "${target}" no encontrado.`);
@@ -722,7 +708,7 @@ function cmdCheckout(args) {
 function cmdCheckoutB(name) {
   if (!state.initialized) { log('error', 'No hay repositorio.'); return; }
   if (!name) { log('error', 'Especifica el nombre de la nueva rama.'); return; }
-  if (name in state.branches) { log('error', `La rama "${name}" ya existe.`); return; }
+  if (state.branches[name] !== undefined) { log('error', `La rama "${name}" ya existe.`); return; }
   state.branches[name] = state.HEAD;
   branchColor(name);
   state.currentBranch = name;
@@ -732,14 +718,12 @@ function cmdCheckoutB(name) {
 
 function cmdMerge(args) {
   if (!state.initialized) { log('error', 'No hay repositorio.'); return; }
-  if (!state.currentBranch) { log('error', 'No puedes mergear desde un HEAD detached.'); return; }
   const src = args[0];
   if (!src) { log('error', 'Especifica la rama a mergear.'); return; }
-  if (!(src in state.branches)) { log('error', `Rama "${src}" no encontrada.`); return; }
+  if (!state.branches[src]) { log('error', `Rama "${src}" no encontrada.`); return; }
   if (src === state.currentBranch) { log('error', 'No puedes mergear una rama consigo misma.'); return; }
 
   const srcHead = state.branches[src];
-  if (!srcHead) { log('error', `La rama "${src}" no tiene commits para mergear.`); return; }
   const mergeId = makeHash();
   const mergeCommit = {
     id: mergeId,
@@ -769,18 +753,14 @@ function cmdReset(args) {
     const cur = state.commits.find(c => c.id === state.HEAD);
     if (!cur || !cur.parents.length) { log('error', 'No hay commit previo.'); return; }
     state.HEAD = cur.parents[0];
-    if (state.currentBranch) {
-      state.branches[state.currentBranch] = state.HEAD;
-    }
+    state.branches[state.currentBranch] = state.HEAD;
     state.commits = state.commits.filter(c => c.id !== cur.id);
     log('success', `Reset a ${shortHash(state.HEAD)}`);
   } else if (args[0] === '--hard' && args[1]) {
     const c = state.commits.find(x => x.id.startsWith(args[1]));
     if (!c) { log('error', 'Commit no encontrado.'); return; }
     state.HEAD = c.id;
-    if (state.currentBranch) {
-      state.branches[state.currentBranch] = c.id;
-    }
+    state.branches[state.currentBranch] = c.id;
     log('success', `Hard reset a ${shortHash(c.id)}`);
   } else {
     log('info', 'Uso: git reset HEAD~1  |  git reset --hard <hash>');
@@ -789,19 +769,16 @@ function cmdReset(args) {
 
 function cmdRebase(args) {
   if (!state.initialized) { log('error', 'No hay repositorio.'); return; }
-  if (!state.currentBranch) { log('error', 'No puedes rebasear desde un HEAD detached.'); return; }
   const onto = args[0];
   if (!onto) { log('error', 'Especifica la rama base.'); return; }
-  if (!(onto in state.branches)) { log('error', `Rama "${onto}" no encontrada.`); return; }
+  if (!state.branches[onto]) { log('error', `Rama "${onto}" no encontrada.`); return; }
   log('info', `Rebase de "${state.currentBranch}" sobre "${onto}" simulado.`);
-  const ontoHead = state.branches[onto];
-  if (!ontoHead) { log('error', `La rama "${onto}" no tiene commits para rebasear.`); return; }
   const newId = makeHash();
   const rebaseCommit = {
     id: newId,
     message: `rebase: ${state.currentBranch} onto ${onto}`,
     branch: state.currentBranch,
-    parents: [ontoHead],
+    parents: [state.branches[onto]],
     x: 0, y: 0,
   };
   state.commits.push(rebaseCommit);
@@ -833,13 +810,13 @@ function cmdLog() {
   if (!state.commits.length) { log('info', 'No hay commits aún.'); return; }
   const recent = [...state.commits].reverse().slice(0, 8);
   recent.forEach(c => {
-    log('info', `${shortHash(c.id)} (${c.branch || 'detached'}) ${c.message}`);
+    log('info', `${shortHash(c.id)} (${c.branch}) ${c.message}`);
   });
 }
 
 function cmdStatus() {
   if (!state.initialized) { log('error', 'No hay repositorio.'); return; }
-  log('info', `En rama: ${getCurrentBranchLabel()}`);
+  log('info', `En rama: ${state.currentBranch}`);
   log('info', `HEAD: ${shortHash(state.HEAD || 'vacío')}`);
   log('info', `Ramas: ${Object.keys(state.branches).join(', ')}`);
   log('info', `Total commits: ${state.commits.length}`);
@@ -884,7 +861,7 @@ function log(type, msg) {
 
 function updateUI() {
   // Branch badge
-  document.getElementById('currentBranchBadge').textContent = getCurrentBranchLabel();
+  document.getElementById('currentBranchBadge').textContent = state.currentBranch || 'sin init';
 
   // Branch list
   const list = document.getElementById('branchList');
